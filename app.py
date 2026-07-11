@@ -23,7 +23,7 @@ base_file = st.sidebar.file_uploader("2. 통합 문서1 CSV 파일 업로드", t
 # 파일이 둘 다 업로드되었을 때 병합 수행
 if holland_file and base_file and st.session_state.merged_df is None:
     try:
-        # 한글 깨짐 방지를 위해 인코딩을 유연하게 처리
+        # 인코딩 처리
         try:
             df_holland = pd.read_csv(holland_file, encoding='utf-8')
         except UnicodeDecodeError:
@@ -34,27 +34,65 @@ if holland_file and base_file and st.session_state.merged_df is None:
         except UnicodeDecodeError:
             df_base = pd.read_csv(base_file, encoding='cp949')
         
-        # 공백 제거 및 이름 매칭 준비
-        df_holland['이름'] = df_holland['이름'].astype(str).str.strip()
-        df_base['성명'] = df_base['성명'].astype(str).str.strip()
+        # 컬럼명 공백 제거
+        df_holland.columns = df_holland.columns.str.strip()
+        df_base.columns = df_base.columns.str.strip()
         
-        # [핵심 수정] '적합한직업' 컬럼이 없는 경우 예외 처리 및 유연한 매칭
-        if '적합한직업' not in df_holland.columns:
-            # 혹시 유사한 이름의 컬럼이 있는지 확인
-            possible_cols = [c for c in df_holland.columns if '직업' in c or '진로' in c]
-            if possible_cols:
-                # 가장 유사한 첫 번째 컬럼을 '적합한직업'으로 복사해서 사용
-                df_holland['적합한직업'] = df_holland[possible_cols[0]]
-            else:
-                # 아예 직업 관련 컬럼이 없으면 빈 텍스트나 기본값으로 생성하여 KeyError 방지
-                df_holland['적합한직업'] = "관련 진로"
+        # --- [이름/성명 컬럼 찾기 유연화] ---
+        # 1. 진로홀랜드 파일에서 이름 컬럼 찾기
+        holland_name_col = None
+        for col in ['이름', '성명', '학생명', '이 름']:
+            if col in df_holland.columns:
+                holland_name_col = col
+                break
+        if holland_name_col is None:
+            # 못 찾으면 4번째나 5번째 대등한 컬럼 위치 자동 매칭 (보통 앞쪽에 이름이 있음)
+            for col in df_holland.columns:
+                if '이름' in col or '성명' in col:
+                    holland_name_col = col
+                    break
+            if holland_name_col is None:
+                holland_name_col = df_holland.columns[4] # 기본 대체제
+                
+        # 2. 기본 베이스(통합 문서1) 파일에서 성명 컬럼 찾기
+        base_name_col = None
+        for col in ['성명', '이름', '학생명', '성 명']:
+            if col in df_base.columns:
+                base_name_col = col
+                break
+        if base_name_col is None:
+            base_name_col = df_base.columns[3] if len(df_base.columns) > 3 else df_base.columns[0]
 
-        # 필요한 컬럼 안전하게 추출
-        holland_cols = ['이름', '담임 선생님용 생기부 참고자료 단축형', '적합한직업']
-        df_holland_sub = df_holland[holland_cols].drop_duplicates(subset=['이름'])
+        # 데이터 정리
+        df_holland['match_name'] = df_holland[holland_name_col].astype(str).str.strip()
+        df_base['match_name'] = df_base[base_name_col].astype(str).str.strip()
+        df_base['성명'] = df_base[base_name_col] # UI 출력용 컬럼 보장
         
-        # 통합 문서1 기준으로 left join 병합
-        merged = pd.merge(df_base, df_holland_sub, left_on='성명', right_on='이름', how='left')
+        # --- [생기부 단축형 및 직업 컬럼 유연화] ---
+        short_text_col = None
+        for col in df_holland.columns:
+            if '단축형' in col or '참고자료' in col:
+                short_text_col = col
+                break
+        if short_text_col is None:
+            short_text_col = df_holland.columns[8] if len(df_holland.columns) > 8 else df_holland.columns[-1]
+            
+        job_col = None
+        for col in df_holland.columns:
+            if '직업' in col or '진로' in col or '학과' in col:
+                job_col = col
+                break
+        
+        # 안전하게 임시 데이터프레임 구축
+        df_holland_sub = pd.DataFrame()
+        df_holland_sub['match_name'] = df_holland['match_name']
+        df_holland_sub['단축형_데이터'] = df_holland[short_text_col] if short_text_col in df_holland.columns else "진로 특성"
+        df_holland_sub['직업_데이터'] = df_holland[job_col] if job_col and job_col in df_holland.columns else "관련 진로 분야"
+        
+        df_holland_sub = df_holland_sub.drop_duplicates(subset=['match_name'])
+        
+        # 병합 수행
+        merged = pd.merge(df_base, df_holland_sub, on='match_name', how='left')
         
         # 기존 가통 컬럼 비어있으면 초기화
         if '1학기 개별가통' not in merged.columns:
@@ -71,12 +109,12 @@ if holland_file and base_file and st.session_state.merged_df is None:
                 st.session_state.student_results[name] = row['1학기 개별가통']
                 
     except Exception as e:
-        st.error(f"파일을 읽고 병합하는 중 오류가 발생했습니다: {e}")
+        st.error(f"파일 구조 매칭 중 오류가 발생했습니다: {e}. CSV 파일의 열 순서나 제목을 확인해 주세요.")
 
 # 3. 데이터가 로드된 이후의 UI 프로세스
 if st.session_state.merged_df is not None:
     df = st.session_state.merged_df
-    student_list = df['성명'].tolist()
+    student_list = df['성명'].dropna().unique().tolist()
     
     # 사이드바에서 학생 선택
     st.sidebar.markdown("---")
@@ -85,12 +123,12 @@ if st.session_state.merged_df is not None:
     # 현재 선택된 학생의 데이터 행 추출
     student_row = df[df['성명'] == selected_student].iloc[0]
     
-    # 데이터 매칭 정보 안전하게 가져오기 (결측치 처리 포함)
-    holland_short = student_row.get('담임 선생님용 생기부 참고자료 단축형', '정보 없음')
-    if pd.isna(holland_short): holland_short = "진로 특성"
+    # 결측치 처리
+    holland_short = student_row.get('단축형_데이터', '정보 없음')
+    if pd.isna(holland_short) or str(holland_short).strip() == "": holland_short = "진로 특성"
         
-    job_recommend = student_row.get('적합한직업', '추천 직업 정보 없음')
-    if pd.isna(job_recommend): job_recommend = "해당 분야"
+    job_recommend = student_row.get('직업_데이터', '추천 직업 정보 없음')
+    if pd.isna(job_recommend) or str(job_recommend).strip() == "": job_recommend = "해당 분야"
     
     # 메인 화면 UI 구성
     st.subheader(f"📍 {selected_student} 학생 기록 중")
@@ -148,11 +186,14 @@ if st.session_state.merged_df is not None:
     st.subheader("💾 최종 결과물 다운로드")
     
     export_df = df.copy()
-    # 원본 파일 틀 유지를 위해 임시 추가된 홀랜드 데이터 컬럼들 삭제
-    columns_to_drop = ['이름', '담임 선생님용 생기부 참고자료 단축형', '적합한직업']
+    # 개발용 임시 매칭 열 삭제하여 원본 구조 유지
+    columns_to_drop = ['match_name', '단축형_데이터', '직업_데이터', '성명_y']
     for col in columns_to_drop:
         if col in export_df.columns:
             export_df = export_df.drop(columns=[col])
+            
+    # 혹시 모를 중복 컬럼 정리
+    export_df = export_df.loc[:, ~export_df.columns.duplicated()]
             
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:

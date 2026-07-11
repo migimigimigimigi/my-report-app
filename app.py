@@ -199,4 +199,48 @@ if st.session_state.merged_df is not None:
                 generated_text = (
                     f"{selected_student} 학생은 {teacher_input.strip()}. "
                     f"진로 시간에 실시한 홀랜드 검사 결과는 {str(holland_short).strip()} 하는 것으로 나타났습니다. "
-                    f"따라서 {str(job_
+                    f"따라서 {str(job_recommend).strip()} 등의 진로 분야가 어울린진다고 제안되었습니다. "
+                    f"그러니 검사 결과를 충분히 활용하여 이번 여름 방학 때 진로에 대해 충분히 의논해보는 귀한 시간이 되어 보시기 바랍니다."
+                )
+                st.session_state.student_results[selected_student] = generated_text
+                st.success("문구가 반영되었습니다!")
+
+    st.markdown("---")
+    st.write("### 🔍 현재 학생 생성 문구 미리보기")
+    current_result = st.session_state.student_results.get(selected_student, "아직 생성된 문구가 없습니다.")
+    st.code(current_result, language="text")
+    
+    for name, text in st.session_state.student_results.items():
+        df.loc[df['성명'] == name, '1학기 개별가통'] = text
+        
+    st.markdown("---")
+    completed_count = len(st.session_state.student_results)
+    total_count = len(student_list)
+    st.write(f"📊 **전체 작성 진행도:** {completed_count} / {total_count} 명 완료")
+    st.progress(completed_count / total_count if total_count > 0 else 0)
+    
+    st.subheader("💾 최종 결과물 다운로드")
+    export_df = df.copy()
+    columns_to_drop = ['match_name', '단축형_데이터', '직업_데이터', '성명_y']
+    for col in columns_to_drop:
+        if col in export_df.columns:
+            export_df = export_df.drop(columns=[col])
+            
+    export_df = export_df.loc[:, ~export_df.columns.duplicated()]
+            
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        export_df.to_excel(writer, index=False, sheet_name='1학기 개별가통 결과')
+    processed_data = output.getvalue()
+    
+    st.download_button(
+        label="📥 엑셀(.xlsx) 파일로 전체 다운로드",
+        data=processed_data,
+        file_name="1학기_말_개별가정통신문_결과.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    
+    with st.expander("👀 현재까지 채워진 전체 표 확인하기"):
+        st.dataframe(export_df)
+else:
+    st.info("👈 웹앱을 시작하려면 왼쪽 사이드바에서 두 개의 데이터 파일(`26-진로홀랜드.csv`, `통합 문서1.csv`)을 업로드해 주세요.")
